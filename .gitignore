@@ -30,3 +30,17 @@
 *.exe
 *.out
 *.app
+src/CMakeFiles
+vc19/.vs
+*CMakeFiles*
+*.vcxproj
+*.sln
+*.filters
+vc19/CMakeCache.txt
+*.cmake
+*.user
+vc19/extern/glfw/src/glfw.dir/Debug
+vc19/src/Debug
+vc19/src/NPendulum.dir
+vc19/x64
+vc19
