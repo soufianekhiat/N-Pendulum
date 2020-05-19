@@ -37,6 +37,7 @@ include_directories( ${DEPENDENCIES_PATH}/imgui/examples )
 include_directories( ${SOLUTION_DIR}/src/ )
 
 add_definitions( -DIMGUI_IMPL_OPENGL_LOADER_GLAD )
+add_definitions( -DIMGUI_USE_WCHAR32 )
 
 add_executable( NPendulum ${_source_list} )
 
