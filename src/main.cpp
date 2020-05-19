@@ -291,7 +291,7 @@ void	SimulateLeapfrog()
 		f32 const m		= *oItMass;
 		f32 const ax	= m > 0.0f ? oItAcc->x/m : 0.0f;
 		f32 const ay	= m > 0.0f ? oItAcc->y/m : 0.0f;
-		// Verlet Integration
+
 		v.x += oItVel->x*fDt + ax*fDt2*0.5f;
 		v.y += oItVel->y*fDt + ay*fDt2*0.5f;
 
