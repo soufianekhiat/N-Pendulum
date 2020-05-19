@@ -8,6 +8,7 @@
 #include <map>
 
 #include <cstdio>
+#include <cmath>
 
 #include <string>
 #include <vector>
@@ -44,6 +45,9 @@ typedef	long long				Int64;
 
 typedef	float					f32;
 typedef	double					f64;
+
+constexpr	f32	fPi		= 3.1415926535897932384626433832795f;
+constexpr	f32	fPi_2	= 1.5707963267948966192313216916398f;
 
 inline Bool		operator==(const ImVec2& lhs, const ImVec2& rhs){ return lhs.x == rhs.x && lhs.y == rhs.y; }
 inline Bool		operator!=(const ImVec2& lhs, const ImVec2& rhs){ return lhs.x != rhs.x || lhs.y != rhs.y; }
@@ -87,9 +91,9 @@ ImVec2 Normalized(ImVec2 v)
 }
 
 static
-void GLFWErrorCallback(int error, const char* description)
+void GLFWErrorCallback( Int32 iError, char const* pDesc )
 {
-	std::cerr << "Glfw Error " << error << ": " << description << std::endl;
+	std::cerr << "Glfw Error " << iError << ": " << pDesc << std::endl;
 }
 
 static
@@ -102,8 +106,7 @@ ImFont* ImGui_LoadFont(ImFontAtlas& oAtlas, char const* name, f32 const fSize, I
 	static const ImWchar ranges[] =
 	{
 		0x0020, 0x00FF, // Basic Latin + Latin Supplement
-		//0x0104, 0x017C, // Polish characters and more
-		0x0100, 0x0500, // Polish characters and more
+		0x0100, 0x0500,
 		0,
 	};
 	ImFontConfig config;
@@ -112,8 +115,6 @@ ImFont* ImGui_LoadFont(ImFontAtlas& oAtlas, char const* name, f32 const fSize, I
 	config.PixelSnapH = false;
 	//config.MergeMode	= true;
 
-	//auto path = std::string(windir) + "\\Fonts\\" + name;
-	//auto font = atlas.AddFontFromFileTTF(path.c_str(), size, &config, ranges);
 	ImFont* pFont = oAtlas.AddFontFromFileTTF(name, fSize, &config, ranges);
 	if (pFont)
 		pFont->DisplayOffset = vDisplayOffset;
@@ -142,8 +143,6 @@ void ImGui_AddLoadFont( ImGuiIO& io, char const* name, f32 const fSize, UInt16 c
 	config.PixelSnapH	= false;
 	config.MergeMode	= true;
 
-	//auto path = std::string(windir) + "\\Fonts\\" + name;
-	//auto font = atlas.AddFontFromFileTTF(path.c_str(), size, &config, ranges);
 	io.Fonts->AddFontFromFileTTF( name, fSize, &config, ranges );
 }
 
@@ -225,8 +224,19 @@ std::vector< ImVec2 >	oPendulumAcc;
 std::vector< ImVec2 >	oPendulumAccPrev;
 std::vector< f32 >		oPendulumMass;
 
+std::vector< f32 >		oPendulumAngle;
+std::vector< f32 >		oPendulumAnglePrev;
+std::vector< f32 >		oPendulumAngleVel;
+std::vector< f32 >		oPendulumAngleVelPrev;
+std::vector< f32 >		oPendulumAngleAcc;
+std::vector< f32 >		oPendulumAngleAccPrev;
+
+std::vector< std::vector< f32 > >
+						oEulerLagrangeEquations;
+
 f32						fG			= 9.81f;
 f32						fDt			= 0.0125f;
+f32						fDt2		= fDt*fDt;
 Int32					iIter		= 32;
 Int32					iLinksCount	= 5;
 Bool					bSimulate	= false;
@@ -245,10 +255,31 @@ void	Constraints()
 			f32		const	fDelta	= fNorm2 - 1.0f;
 			ImVec2	const	vDir	= Normalized( vDelta );
 
-			vA = vA + vDir*fDelta*0.5f;
-			vB = vB - vDir*fDelta*0.5f;
+			f32		const	fMassA	= oPendulumMass[ iLinkIdx - 1 ];
+			f32		const	fMassB	= oPendulumMass[ iLinkIdx - 0 ];
+
+			f32		const	fCoefA	= fMassA/( fMassA + fMassB );
+			f32		const	fCoefB	= fMassB/( fMassA + fMassB );
+
+			vA = vA + vDir*fDelta*fCoefA*0.5f;
+			vB = vB - vDir*fDelta*fCoefB*0.5f;
 		}
-		oPendulumPos[ 0 ] = ImVec2( 0, 0 );
+	}
+}
+
+void	HardAngularComputation()
+{
+	for ( Int32 iLinkIdx = 1; iLinkIdx <= iLinksCount; ++iLinkIdx )
+	{
+		ImVec2& vA = oPendulumPos[ iLinkIdx - 1 ];
+		ImVec2& vB = oPendulumPos[ iLinkIdx - 0 ];
+
+		ImVec2	const	vDelta	= vB - vA;
+		ImVec2	const	vDir	= Normalized( vDelta );
+		f32		const	fAngle	= std::acos( vDelta.y );
+
+		oPendulumAngle		[ iLinkIdx - 1 ] = fAngle;
+		oPendulumAngleVel	[ iLinkIdx - 1 ] = ( oPendulumAnglePrev[ iLinkIdx - 1 ] - oPendulumAngle[ iLinkIdx - 1 ] )/fDt;
 	}
 }
 
@@ -258,14 +289,12 @@ void	SimulateStormerVerlet()
 	auto oItAcc		= oPendulumAcc.begin();
 	auto oItMass	= oPendulumMass.begin();
 
-	f32 const fDt2 = fDt*fDt;
-
 	for ( ImVec2& v : oPendulumPos )
 	{
 		f32 const m		= *oItMass;
 		f32 const ax	= m > 0.0f ? oItAcc->x/m : 0.0f;
 		f32 const ay	= m > 0.0f ? oItAcc->y/m : 0.0f;
-		// Verlet Integration
+
 		v.x = 2.0f*v.x - oItPrev->x + ax*fDt2;
 		v.y = 2.0f*v.y - oItPrev->y + ay*fDt2;
 
@@ -275,6 +304,7 @@ void	SimulateStormerVerlet()
 	}
 
 	Constraints();
+	HardAngularComputation();
 }
 
 void	SimulateLeapfrog()
@@ -283,8 +313,6 @@ void	SimulateLeapfrog()
 	auto oItVel		= oPendulumVel.begin();
 	auto oItAcc		= oPendulumAcc.begin();
 	auto oItMass	= oPendulumMass.begin();
-
-	f32 const fDt2 = fDt*fDt;
 
 	for ( ImVec2& v : oPendulumPos )
 	{
@@ -305,6 +333,7 @@ void	SimulateLeapfrog()
 	}
 
 	Constraints();
+	HardAngularComputation();
 }
 
 Int32 iSelectedIntegrator = 0;
@@ -313,17 +342,95 @@ std::vector< pfSimPtr >		oIntegrator			= { &SimulateStormerVerlet, &SimulateLeap
 std::vector< std::string >	oIntegratorNames	= { "Stormer-Verlet (Position Verlet)", "Leapfrog (Velocity Verlet)" };
 pfSimPtr					pfCurrentIntegrator = &SimulateStormerVerlet;
 
+f32	phi( Int32 const j, Int32 const k )
+{
+	return j == k ? 0.0f : 1.0f;
+}
+f32	sigma( Int32 const j, Int32 const k )
+{
+	return j > k ? 0.0f : 1.0f;
+}
+
+void	UpdateEulerLagrangeEquation()
+{
+	// Ref:
+	//		Equations of Motion Formulation of a Pendulum Containing N-point Masses (eq. 46)
+	for ( Int32 q = 0; q < iLinksCount; ++q )
+	{
+		std::vector< f32 >	oEulerLagrangeEquation( iLinksCount );
+		f32 fX0 = 0.0f;
+		for ( Int32 i = q; i < iLinksCount; ++i )
+		{
+			fX0 += /*l_q**/oPendulumMass[ i ]*std::sin( oPendulumAngle[ q ] );
+		}
+		fX0 *= fG;
+
+		f32 fX1 = 0.0f;
+		for ( Int32 k = q; k < iLinksCount; ++k )
+		{
+			f32 fX2 = 0.0f;
+			for ( Int32 i = 0; i < k; ++i )
+			{
+				fX2 += /*l_i*l_q*/oPendulumAngleVel[ i ]*oPendulumAngleVel[ q ]*
+					std::sin( oPendulumAngle[ q ] - oPendulumAngle[ i ] );
+			}
+			fX1 += oPendulumMass[ k ]*fX2;
+		}
+
+		f32 fX2 = 0.0f;
+		for ( Int32 k = q; k < iLinksCount; ++k )
+		{
+			fX2 += /*l_q^2**/oPendulumMass[ k ]*oPendulumAngleAcc[ q ];
+		}
+
+		f32 fX3 = 0.0f;
+		for ( Int32 k = q; k < iLinksCount; ++k )
+		{
+			f32 fX4 = 0.0f;
+			for ( Int32 i = 0; i < k; ++i )
+			{
+				fX4 += /*l_i*l_q*/oPendulumAngleVel[ i ]*oPendulumAngleVel[ q ]*
+					std::sin( oPendulumAngle[ i ] - oPendulumAngle[ q ] )*
+					( oPendulumAngleVel[ q ] - oPendulumAngleVel[ i ] );
+			}
+			fX3 += oPendulumMass[ k ]*fX4;
+		}
+
+		f32 fX4 = 0.0f;
+		for ( Int32 k = q; k < iLinksCount; ++k )
+		{
+			f32 fX5 = 0.0f;
+			for ( Int32 i = 0; i < k; ++i )
+			{
+				fX5 += /*l_i*l_q*/phi( i, q )*std::cos( oPendulumAngle[ i ] - oPendulumAngle[ q ] )*oPendulumAngleAcc[ i ];
+			}
+			fX4 += oPendulumMass[ k ]*fX5;
+		}
+
+		f32 const fEulerLagrangeQ = fX0 + fX1 + fX2 + fX3 + fX4;
+
+		oEulerLagrangeEquations[ q ].push_back( std::log2( fEulerLagrangeQ ) );
+	}
+}
+
 void	Simulate()
 {
-	std::vector< ImVec2 > oPosCopy = oPendulumPos;
-	std::vector< ImVec2 > oVelCopy = oPendulumVel;
-	std::vector< ImVec2 > oAccCopy = oPendulumAcc;
+	std::vector< ImVec2 >	oPosCopy		= oPendulumPos;
+	std::vector< ImVec2 >	oVelCopy		= oPendulumVel;
+	std::vector< ImVec2 >	oAccCopy		= oPendulumAcc;
+	std::vector< f32 >		oAngleCopy		= oPendulumAngle;
+	std::vector< f32 >		oAngleVelCopy	= oPendulumAngleVel;
+	std::vector< f32 >		oAngleAccCopy	= oPendulumAngleAcc;
 
 	( *pfCurrentIntegrator )();
+	UpdateEulerLagrangeEquation();
 
-	oPendulumPosPrev = oPosCopy;
-	oPendulumVelPrev = oVelCopy;
-	oPendulumAccPrev = oAccCopy;
+	oPendulumPosPrev		= oPosCopy;
+	oPendulumVelPrev		= oVelCopy;
+	oPendulumAccPrev		= oAccCopy;
+	oPendulumAnglePrev		= oAngleCopy;
+	oPendulumAngleVelPrev	= oAngleVelCopy;
+	oPendulumAngleAccPrev	= oAngleAccCopy;
 }
 
 void	Reset()
@@ -339,6 +446,18 @@ void	Reset()
 
 	oPendulumMass.clear();
 	oPendulumMass.reserve( iLinksCount + 1 );
+
+	oPendulumAngle.clear();
+	oPendulumAngle.resize( iLinksCount );
+
+	oPendulumAngleVel.clear();
+	oPendulumAngleVel.resize( iLinksCount );
+
+	oPendulumAngleAcc.clear();
+	oPendulumAngleAcc.resize( iLinksCount );
+
+	oEulerLagrangeEquations.clear();
+	oEulerLagrangeEquations.resize( iLinksCount );
 
 	oPendulumPos.emplace_back( 0.0f, 0.0f );
 	oPendulumVel.emplace_back( 0.0f, 0.0f );
@@ -361,9 +480,16 @@ void	Reset()
 	std::fill( oPendulumAcc.begin(), oPendulumAcc.end(), ImVec2( 0.0f, fG ) );
 	oPendulumAcc[ 0 ] = ImVec2( 0.0f, 0.0f );
 
-	oPendulumPosPrev = oPendulumPos;
-	oPendulumVelPrev = oPendulumVel;
-	oPendulumAccPrev = oPendulumAcc;
+	std::fill( oPendulumAngle.begin(), oPendulumAngle.end(), fPi_2 );
+	std::fill( oPendulumAngleVel.begin(), oPendulumAngleVel.end(), 0.0f );
+	std::fill( oPendulumAngleAcc.begin(), oPendulumAngleAcc.end(), 0.0f );
+
+	oPendulumPosPrev		= oPendulumPos;
+	oPendulumVelPrev		= oPendulumVel;
+	oPendulumAccPrev		= oPendulumAcc;
+	oPendulumAnglePrev		= oPendulumAngle;
+	oPendulumAngleVelPrev	= oPendulumAngleVel;
+	oPendulumAngleAccPrev	= oPendulumAngleAcc;
 }
 
 int main()
@@ -377,7 +503,6 @@ int main()
 	glfwWindowHint( GLFW_CONTEXT_VERSION_MAJOR, 4 );
 	glfwWindowHint( GLFW_CONTEXT_VERSION_MINOR, 6 );
 	glfwWindowHint( GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE );
-	//glfwWindowHint( GLFW_VISIBLE, false );
 
 	GLFWwindow* pWindow = glfwCreateWindow( 1280, 720, "NPendulum", nullptr, nullptr );
 	if ( pWindow == nullptr )
@@ -411,10 +536,11 @@ int main()
 	ImGui_ImplGlfw_InitForOpenGL( pWindow, true );
 	ImGui_ImplOpenGL3_Init( glsl_version );
 
-	ImVec4 const vOrange	= ImVec4(255.f/255.f,	128.f/255.f,  0.f,			1.0f);
+	ImVec4 const vOrange	= ImVec4(255.f/255.f,	128.f/255.f,		 0.f,	1.0f);
 	ImVec4 const vBlue		= ImVec4(  0.f/255.f,	128.f/255.f, 255.f/255.f,	1.0f);
 	ImVec4 const vGreen		= ImVec4( 64.f/255.f,	192.f/255.f,  64.f/255.f,	1.0f);
-	ImVec4 const vPurple	= ImVec4(1.f - 64.f/255.f, 1.0f - 192.f/255.f, 1.0f - 64.f/255.f, 1.0f);
+	ImVec4 const vPurple	= ImVec4(1.f, 1.f, 1.f, 0.f) -
+								ImVec4(64.f/255.f,	192.f/255.f,  64.f/255.f,	1.0f);
 
 	Reset();
 
@@ -461,7 +587,10 @@ int main()
 					Reset();
 				}
 				ImGui::InputFloat( "Gravity", &fG, 1.0f, 0.0f );
-				ImGui::InputFloat( ( char const* )u8"\u0394t", &fDt, 1.0f, 0.0f );
+				if ( ImGui::InputFloat( ( char const* )u8"\u0394t", &fDt, 1.0f, 0.0f ) )
+				{
+					fDt2 = fDt*fDt;
+				}
 				if ( ImGui::InputInt( "Iteration", &iIter ) )
 				{
 					iIter = std::max( iIter, 1 );
@@ -489,6 +618,13 @@ int main()
 						pfCurrentIntegrator = oIntegrator[ iNewIdx ];
 						iSelectedIntegrator = iNewIdx;
 					}
+				}
+			ImGui::End();
+
+			ImGui::Begin( "(log2) Euler Lagrange Equations" );
+				for ( auto const& oEL : oEulerLagrangeEquations )
+				{
+					ImGui::PlotLines( "", oEL.data(), ( Int32 )oEL.size() );
 				}
 			ImGui::End();
 
@@ -521,7 +657,7 @@ int main()
 				}
 				pDrawList->AddPolyline( oVizPendulum.data(), int( oVizPendulum.size() ), ImGui::GetColorU32( vBlue ), false, 8.0f );
 
-				for ( Int32 iIdx = 1; iIdx <= iLinksCount; ++iIdx )
+				for ( Int32 iIdx = 0; iIdx <= iLinksCount; ++iIdx )
 				{
 					f32 const m = oPendulumMass[ iIdx ];
 					f32 const r = 8.0f*m/f32( iLinksCount );
