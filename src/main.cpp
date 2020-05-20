@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <tuple>
 
 #include <cstdio>
 #include <cmath>
@@ -15,6 +16,8 @@
 #include <map>
 #include <algorithm>
 #include <utility>
+
+// #define CONSTRAINTS_INEXTENSIBLE
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_internal.h>
@@ -221,7 +224,6 @@ std::vector< ImVec2 >	oPendulumPosPrev;
 std::vector< ImVec2 >	oPendulumVel;
 std::vector< ImVec2 >	oPendulumVelPrev;
 std::vector< ImVec2 >	oPendulumAcc;
-std::vector< ImVec2 >	oPendulumAccPrev;
 std::vector< f32 >		oPendulumMass;
 
 std::vector< f32 >		oPendulumAngle;
@@ -229,7 +231,6 @@ std::vector< f32 >		oPendulumAnglePrev;
 std::vector< f32 >		oPendulumAngleVel;
 std::vector< f32 >		oPendulumAngleVelPrev;
 std::vector< f32 >		oPendulumAngleAcc;
-std::vector< f32 >		oPendulumAngleAccPrev;
 
 std::vector< std::vector< f32 > >
 						oEulerLagrangeEquations;
@@ -241,7 +242,7 @@ Int32					iIter		= 32;
 Int32					iLinksCount	= 5;
 Bool					bSimulate	= false;
 
-void	Constraints()
+void	ConstraintsSpringLike()
 {
 	for ( Int32 iIdx = 0; iIdx < iIter; ++iIdx )
 	{
@@ -267,6 +268,57 @@ void	Constraints()
 	}
 }
 
+void	ConstraintsInextensible()
+{
+	for ( Int32 iLinkIdx = 1; iLinkIdx <= iLinksCount; ++iLinkIdx )
+	{
+		ImVec2& vA = oPendulumPos[ iLinkIdx - 1 ];
+		ImVec2& vB = oPendulumPos[ iLinkIdx - 0 ];
+
+		ImVec2	const	vDelta	= vB - vA;
+		f32		const	fNorm2	= Norm2( vDelta );
+		f32		const	fDelta	= fNorm2 - 1.0f;
+		ImVec2	const	vDir	= Normalized( vDelta );
+
+		vB = vB - vDir*fDelta;
+	}
+}
+
+void	Constraints()
+{
+#ifdef CONSTRAINTS_INEXTENSIBLE
+	ConstraintsInextensible();
+#else
+	ConstraintsSpringLike();
+#endif
+}
+
+void	HardAngularAccelerationComputation()
+{
+	for ( Int32 iLinkIdx = 0; iLinkIdx < iLinksCount; ++iLinkIdx )
+	{
+		if ( oPendulumMass[ iLinkIdx + 1 ] > 0.f )
+			oPendulumAngleAcc[ iLinkIdx ] = -fG*std::sin( oPendulumAngle[ iLinkIdx ] )/oPendulumMass[ iLinkIdx + 1 ];
+		else
+			oPendulumAngleAcc[ iLinkIdx ] = 0.0f;
+	}
+}
+
+void	HardAngularVelocityComputation()
+{
+	for ( Int32 iLinkIdx = 0; iLinkIdx < iLinksCount; ++iLinkIdx )
+	{
+		oPendulumAngleVel[ iLinkIdx ] = ( oPendulumAngle[ iLinkIdx ] - oPendulumAnglePrev[ iLinkIdx ] )/fDt;
+	}
+}
+
+void	HardAngularAccelerationVelocityComputation()
+{
+	// Maintains the order
+	HardAngularAccelerationComputation();
+	HardAngularVelocityComputation();
+}
+
 void	HardAngularComputation()
 {
 	for ( Int32 iLinkIdx = 1; iLinkIdx <= iLinksCount; ++iLinkIdx )
@@ -279,9 +331,25 @@ void	HardAngularComputation()
 		f32		const	fAngle	= std::acos( vDelta.y );
 
 		oPendulumAngle		[ iLinkIdx - 1 ] = fAngle;
-		oPendulumAngleVel	[ iLinkIdx - 1 ] = ( oPendulumAnglePrev[ iLinkIdx - 1 ] - oPendulumAngle[ iLinkIdx - 1 ] )/fDt;
 	}
+
+	HardAngularAccelerationVelocityComputation();
 }
+
+template < typename Type >
+auto StormerVerlet = []( Type const f, Type const f_1, Type const a, f32 const fDt, f32 const fDt2 )
+{
+	return 2.0f*f - f_1 + a*fDt2;
+};
+
+template < typename Type >
+auto StormerVerletVelocity = []( Type const f, Type const df, Type const a, f32 const fDt, f32 const fDt2 )
+{
+	return std::tuple< Type, Type >(
+			f + df*fDt + a*fDt2*0.5f,
+			df + a*fDt
+		);
+};
 
 void	SimulateStormerVerlet()
 {
@@ -291,12 +359,10 @@ void	SimulateStormerVerlet()
 
 	for ( ImVec2& v : oPendulumPos )
 	{
-		f32 const m		= *oItMass;
-		f32 const ax	= m > 0.0f ? oItAcc->x/m : 0.0f;
-		f32 const ay	= m > 0.0f ? oItAcc->y/m : 0.0f;
+		f32		const m	= *oItMass;
+		ImVec2	const a	= m > 0.0f ? ( *oItAcc )*( 1.0f/m ) : ImVec2(0.0f, 0.0f);
 
-		v.x = 2.0f*v.x - oItPrev->x + ax*fDt2;
-		v.y = 2.0f*v.y - oItPrev->y + ay*fDt2;
+		v = StormerVerlet< ImVec2 >( v, *oItPrev, a, fDt, fDt2 );
 
 		++oItPrev;
 		++oItAcc;
@@ -317,14 +383,12 @@ void	SimulateLeapfrog()
 	for ( ImVec2& v : oPendulumPos )
 	{
 		f32 const m		= *oItMass;
-		f32 const ax	= m > 0.0f ? oItAcc->x/m : 0.0f;
-		f32 const ay	= m > 0.0f ? oItAcc->y/m : 0.0f;
+		ImVec2 const a	= m > 0.0f ? ( *oItAcc )*( 1.0f/m ) : ImVec2(0.0f, 0.0f);
 
-		v.x += oItVel->x*fDt + ax*fDt2*0.5f;
-		v.y += oItVel->y*fDt + ay*fDt2*0.5f;
-
-		oItVel->x += ax*fDt;
-		oItVel->y += ay*fDt;
+		std::tie( v, *oItVel ) =
+					StormerVerletVelocity< ImVec2 >(
+						v, *oItVel, a, fDt, fDt2
+					);
 
 		++oItPrev;
 		++oItVel;
@@ -336,11 +400,80 @@ void	SimulateLeapfrog()
 	HardAngularComputation();
 }
 
-Int32 iSelectedIntegrator = 0;
+void	ComputePositions()
+{
+	ImVec2 vPrev = oPendulumPos[ 0 ];
+	for ( Int32 iLink = 1; iLink <= iLinksCount; ++iLink )
+	{
+		f32 const fAngle = oPendulumAngle[ iLink - 1 ];
+
+		vPrev.x += /*l_iLink**/std::sin( fAngle );
+		vPrev.y += /*l_iLink**/std::cos( fAngle );
+
+		oPendulumPos[ iLink ] = vPrev;
+	}
+}
+
+void	SimulateStormerVerletAngle()
+{
+	auto oItPrev	= oPendulumAnglePrev.begin();
+	auto oItAcc		= oPendulumAngleAcc.begin();
+	auto oItMass	= oPendulumMass.begin();
+
+	++oItMass;
+
+	for ( f32& fAngle : oPendulumAngle )
+	{
+		f32 const m	= *oItMass;
+		f32 const a	= m > 0.0f ? ( *oItAcc )/m : 0.0f;
+
+		fAngle = StormerVerlet< f32 >( fAngle, *oItPrev, a, fDt, fDt2 );
+
+		++oItPrev;
+		++oItAcc;
+		++oItMass;
+	}
+
+	HardAngularAccelerationVelocityComputation();
+	ComputePositions();
+}
+
+void	SimulateLeapfrogAngle()
+{
+	auto oItPrev	= oPendulumAnglePrev.begin();
+	auto oItVel		= oPendulumAngle.begin();
+	auto oItAcc		= oPendulumAngleAcc.begin();
+	auto oItMass	= oPendulumMass.begin();
+
+	++oItMass;
+
+	for ( f32& fAngle : oPendulumAngle )
+	{
+		f32 const m	= *oItMass;
+		f32 const a	= m > 0.0f ? ( *oItAcc )/m : 0.0f;
+
+		std::tie( fAngle, *oItVel ) =
+					StormerVerletVelocity< f32 >(
+						fAngle, *oItVel, a, fDt, fDt2
+					);
+
+		++oItPrev;
+		++oItVel;
+		++oItAcc;
+		++oItMass;
+	}
+
+	HardAngularAccelerationComputation();
+	ComputePositions();
+}
+
 typedef void ( *pfSimPtr )();
-std::vector< pfSimPtr >		oIntegrator			= { &SimulateStormerVerlet, &SimulateLeapfrog };
-std::vector< std::string >	oIntegratorNames	= { "Stormer-Verlet (Position Verlet)", "Leapfrog (Velocity Verlet)" };
-pfSimPtr					pfCurrentIntegrator = &SimulateStormerVerlet;
+std::vector< pfSimPtr >		oIntegrator			= { &SimulateStormerVerlet, &SimulateLeapfrog, &SimulateStormerVerletAngle, &SimulateLeapfrogAngle };
+std::vector< Bool >			oNeedConstraints	= { true, true, false, false };
+std::vector< std::string >	oIntegratorNames	= { "[Position] Stormer-Verlet (Position Verlet)", "[Position] Leapfrog (Velocity Verlet)", "[Angle] Stormer-Verlet (Position Verlet)", "[Angle] Leapfrog (Velocity Verlet)" };
+
+Int32 iSelectedIntegrator = 0; 
+pfSimPtr					pfCurrentIntegrator = oIntegrator[ iSelectedIntegrator ];
 
 f32	phi( Int32 const j, Int32 const k )
 {
@@ -409,7 +542,7 @@ void	UpdateEulerLagrangeEquation()
 
 		f32 const fEulerLagrangeQ = fX0 + fX1 + fX2 + fX3 + fX4;
 
-		oEulerLagrangeEquations[ q ].push_back( std::log2( fEulerLagrangeQ ) );
+		oEulerLagrangeEquations[ q ].push_back( std::log2( std::abs( fEulerLagrangeQ ) ) );
 	}
 }
 
@@ -417,20 +550,16 @@ void	Simulate()
 {
 	std::vector< ImVec2 >	oPosCopy		= oPendulumPos;
 	std::vector< ImVec2 >	oVelCopy		= oPendulumVel;
-	std::vector< ImVec2 >	oAccCopy		= oPendulumAcc;
 	std::vector< f32 >		oAngleCopy		= oPendulumAngle;
 	std::vector< f32 >		oAngleVelCopy	= oPendulumAngleVel;
-	std::vector< f32 >		oAngleAccCopy	= oPendulumAngleAcc;
 
 	( *pfCurrentIntegrator )();
 	UpdateEulerLagrangeEquation();
 
 	oPendulumPosPrev		= oPosCopy;
 	oPendulumVelPrev		= oVelCopy;
-	oPendulumAccPrev		= oAccCopy;
 	oPendulumAnglePrev		= oAngleCopy;
 	oPendulumAngleVelPrev	= oAngleVelCopy;
-	oPendulumAngleAccPrev	= oAngleAccCopy;
 }
 
 void	Reset()
@@ -486,10 +615,8 @@ void	Reset()
 
 	oPendulumPosPrev		= oPendulumPos;
 	oPendulumVelPrev		= oPendulumVel;
-	oPendulumAccPrev		= oPendulumAcc;
 	oPendulumAnglePrev		= oPendulumAngle;
 	oPendulumAngleVelPrev	= oPendulumAngleVel;
-	oPendulumAngleAccPrev	= oPendulumAngleAcc;
 }
 
 int main()
@@ -591,7 +718,7 @@ int main()
 				{
 					fDt2 = fDt*fDt;
 				}
-				if ( ImGui::InputInt( "Iteration", &iIter ) )
+				if ( oNeedConstraints[ iSelectedIntegrator ] && ImGui::InputInt( "Iteration", &iIter ) )
 				{
 					iIter = std::max( iIter, 1 );
 				}
@@ -634,9 +761,9 @@ int main()
 				ImVec2		vSize		= ImGui::GetWindowContentRegionMax();
 				ImVec2		vCenter		= ImVec2( vPos.x + vSize.x*0.5f, vPos.y + vSize.y*0.5f );
 
-				constexpr f32 fSecurityZone	= 0.05f; // 10%
+				constexpr f32 fSecurityZone	= 0.0f; // 10%
 				f32 const fMinSize	= std::min( vSize.x, vSize.y )*( 1.0f - fSecurityZone );
-				f32 const fLinkSize	= 0.5f*fMinSize/f32( iLinksCount + 1 );
+				f32 const fLinkSize	= 0.5f*fMinSize/f32( iLinksCount );
 
 				std::vector< ImVec2 > oVizPendulum;
 
