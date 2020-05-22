@@ -262,8 +262,8 @@ void	ConstraintsSpringLike()
 			f32		const	fCoefA	= fMassA/( fMassA + fMassB );
 			f32		const	fCoefB	= fMassB/( fMassA + fMassB );
 
-			vA = vA + vDir*fDelta*fCoefA*0.5f;
-			vB = vB - vDir*fDelta*fCoefB*0.5f;
+			vA = vA + vDir*fDelta*fCoefA;
+			vB = vB - vDir*fDelta*fCoefB;
 		}
 	}
 }
